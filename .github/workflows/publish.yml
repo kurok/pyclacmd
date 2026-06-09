@@ -2,7 +2,7 @@ name: Publish to PyPI
 
 # Publishes the package to PyPI when a GitHub Release is published.
 # Uses PyPI Trusted Publishing (OIDC) — no API token is stored in the repo.
-# Requires a Trusted Publisher configured on PyPI for project "claudecmd"
+# Requires a Trusted Publisher configured on PyPI for project "pyclacmd"
 # (owner: kurok, repo: pyclacmd, workflow: publish.yml, environment: pypi).
 
 on:
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/claudecmd
+      url: https://pypi.org/p/pyclacmd
     permissions:
       id-token: write   # required for OIDC trusted publishing
     steps:
