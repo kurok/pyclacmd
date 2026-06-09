@@ -9,6 +9,6 @@ path rather than separately-priced ``-p``/headless usage.
 It is intentionally a thin, well-behaved automation facade.
 """
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = ["__version__"]
