@@ -67,7 +67,7 @@ def _import_pexpect() -> Any:
         raise ClacmdError(
             PTY_UNAVAILABLE,
             "PTY fallback requires the 'pexpect' package "
-            "(install with: pip install 'claudecmd[pty]').",
+            "(install with: pip install 'pyclacmd[pty]').",
         )
 
 

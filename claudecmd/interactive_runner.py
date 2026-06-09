@@ -62,7 +62,7 @@ def _imports(pexpect_module: Any, pyte_module: Any):
         raise ClacmdError(
             PTY_UNAVAILABLE,
             "Interactive mode requires the 'pexpect' package "
-            "(install with: pip install 'claudecmd[interactive]').",
+            "(install with: pip install 'pyclacmd[interactive]').",
         )
     try:
         pyte = pyte_module or __import__("pyte")
@@ -70,7 +70,7 @@ def _imports(pexpect_module: Any, pyte_module: Any):
         raise ClacmdError(
             PTY_UNAVAILABLE,
             "Interactive mode requires the 'pyte' package "
-            "(install with: pip install 'claudecmd[interactive]').",
+            "(install with: pip install 'pyclacmd[interactive]').",
         )
     return pexpect, pyte
 
