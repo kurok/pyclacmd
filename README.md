@@ -1,5 +1,14 @@
 # claudecmd
 
+[![PyPI version](https://img.shields.io/pypi/v/pyclacmd.svg)](https://pypi.org/project/pyclacmd/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pyclacmd.svg)](https://pypi.org/project/pyclacmd/)
+[![CI](https://github.com/kurok/pyclacmd/actions/workflows/ci.yml/badge.svg)](https://github.com/kurok/pyclacmd/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/pypi/l/pyclacmd.svg)](https://github.com/kurok/pyclacmd/blob/main/LICENSE)
+
+> **`pip install pyclacmd`** → the `claudecmd` command. Script Claude Code from
+> the shell while keeping calls on your **interactive (subscription)** path, not
+> separately-priced `-p`/headless usage.
+
 A small, reliable command that drives your **local, already-installed Claude
 Code** *interactive* session programmatically — from scripts, shell pipelines,
 and editor integrations — and returns the assistant's reply as plain text or a
