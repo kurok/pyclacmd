@@ -5,10 +5,12 @@ editor integrations call your **local, already-installed Claude Code**
 programmatically — with a stable output contract, session handling, timeouts,
 structured errors, and an optional PTY fallback.
 
-It is a thin wrapper around `claude -p` (Claude Code's print/headless mode), not
-a replacement for interactive Claude Code. There is no network server and no
-API key handling of its own — it shells out to the `claude` binary you already
-use.
+By default it is a thin wrapper around `claude -p` (Claude Code's print/headless
+mode). It can **also drive the *interactive* session programmatically**
+(`--interactive`) — useful because Claude Code prices `-p`/headless usage
+separately from interactive sessions, so `--interactive` keeps scripted calls on
+your subscription. Either way there is no network server and no API key handling
+of its own — it shells out to the `claude` binary you already use.
 
 ```bash
 claudecmd "say hello"
@@ -85,6 +87,12 @@ The PTY fallback needs `pexpect`, which is an optional extra:
 pip install ".[pty]"
 ```
 
+Interactive mode (`--interactive`) needs `pexpect` **and** `pyte`:
+
+```bash
+pip install ".[interactive]"
+```
+
 ---
 
 ## Usage
@@ -123,6 +131,8 @@ STDIN. If both are present they are combined:
 | `--permission-mode <mode>` | Claude permission mode (e.g. `plan`, `acceptEdits`). |
 | `--no-session-persistence` | Do not persist or resume the session. |
 | `--pty` | Force execution inside a pseudo-terminal (needs `pexpect`). |
+| `--interactive` | Drive the **interactive** session instead of `-p` (needs `pexpect`+`pyte`; see below). |
+| `--tools <tools>` | Interactive only: built-in tools to allow (e.g. `"Bash,Read"`); `""` disables all. |
 | `--debug` | Emit redacted diagnostics to stderr; keep oversize-stdin temp files. |
 | `--dry-run` | Print the command plan and exit without calling Claude. |
 | `--version` / `--help` | Standard. |
@@ -304,6 +314,40 @@ escape sequences (a known macOS Terminal.app nuisance), and forwards terminal
 resizes. It is used when you pass `--pty`, or automatically as a fallback if a
 normal run fails with a TTY-related error. PTY output is plain text only, so
 session id and cost metadata are not available on that path.
+
+---
+
+## Interactive mode
+
+`claude -p` (the default path) is priced separately from interactive Claude Code
+usage. `--interactive` runs the **interactive** session instead, so scripted
+calls count against your Claude subscription the same as hand-typed ones.
+
+```bash
+claudecmd --interactive "summarize the architecture of this repo"
+claudecmd --interactive --json --model sonnet "list the open TODOs"
+claudecmd --interactive --tools "" "explain this error"   # no tools => no permission prompts
+```
+
+Under the hood it spawns the interactive TUI under a pseudo-terminal, renders it
+with a real terminal emulator (`pyte`), auto-answers the one-time
+workspace-trust dialog for the working directory, waits for the turn to settle,
+and extracts the assistant's reply from the rendered screen. Requires the
+`interactive` extra (`pexpect` + `pyte`).
+
+**Caveats** — it scrapes a human-facing TUI, so it is inherently less robust
+than `-p`:
+
+- No `session_id` or `cost_usd` is available (the TUI does not expose them);
+  `--json` reports `"mode": "interactive"` with those fields `null`.
+- Completion is detected heuristically (the reply settles and the input box
+  returns). Give long replies a larger `--timeout`.
+- A tool-permission prompt will stall an unattended run — pass `--tools ""` to
+  disable tools, or an appropriate `--permission-mode`.
+- `--stream`, session-name persistence, and cost ceilings do not apply; use the
+  default `-p` path for those.
+- Extraction is tuned to Claude Code's current TUI (v2.1.x) and may need updating
+  if the interface changes.
 
 ---
 

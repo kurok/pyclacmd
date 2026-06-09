@@ -32,6 +32,7 @@ from .prompt import DEFAULT_MAX_STDIN_BYTES, cleanup_temp_files, collect_prompt,
 from .redact import redact, redact_argv
 from . import output as output_mod
 from . import pty_runner
+from . import interactive_runner as ir
 from . import runner as runner_mod
 from .session_store import SessionStore
 
@@ -81,6 +82,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not persist/resume the session",
     )
     parser.add_argument("--pty", action="store_true", help="Force execution inside a PTY")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Drive the interactive Claude session (not -p) so usage stays on your subscription",
+    )
+    parser.add_argument(
+        "--tools",
+        dest="tools",
+        metavar="TOOLS",
+        help='Interactive only: built-in tools to allow (e.g. "Bash,Read"); "" disables all',
+    )
     parser.add_argument("--debug", action="store_true", help="Emit diagnostics to stderr (redacted)")
     parser.add_argument("--dry-run", action="store_true", dest="dry_run", help="Print the command plan, do not run Claude")
     parser.add_argument(
@@ -147,6 +159,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             resume_session_id=resume_id,
             cwd=args.cwd,
         )
+
+        if args.interactive:
+            return _run_interactive(prompt, args, store, resume_id, dbg)
 
         output_format = OUTPUT_STREAM_JSON if args.stream else OUTPUT_JSON
         command = build_command(prompt, options, output_format=output_format)
@@ -223,6 +238,58 @@ def _run_stream(command, args, store) -> int:
     if result.returncode != 0:
         raise _classify_exit(result)
     _maybe_update_session(store, args, processor.session_id)
+    return 0
+
+
+def _run_interactive(prompt, args, store, resume_id, dbg) -> int:
+    from .claude_command import default_claude_bin
+
+    claude_bin = default_claude_bin()
+    if args.stream:
+        dbg("--stream is ignored in --interactive mode (no streaming contract)")
+
+    argv = ir.build_interactive_argv(
+        prompt,
+        claude_bin=claude_bin,
+        model=args.model,
+        permission_mode=args.permission_mode,
+        tools=args.tools,
+        resume_session_id=resume_id,
+    )
+    if args.dry_run:
+        return _print_dry_run(argv, args)
+
+    dbg("interactive argv: " + " ".join(shlex.quote(a) for a in redact_argv(argv)))
+    result = ir.run_interactive(
+        prompt,
+        claude_bin=claude_bin,
+        cwd=args.cwd,
+        model=args.model,
+        permission_mode=args.permission_mode,
+        tools=args.tools,
+        resume_session_id=resume_id,
+        timeout=args.timeout,
+    )
+    dbg("interactive events: {} ({}ms)".format(result.events, result.duration_ms))
+
+    if not result.text.strip() and not args.raw:
+        raise ClacmdError(
+            UNKNOWN,
+            "Interactive run produced no extractable assistant text "
+            "(re-run with --debug --raw to inspect the rendered screen).",
+            extra={"duration_ms": result.duration_ms},
+        )
+
+    if args.raw:
+        _write_stdout(result.rendered)
+    elif args.json:
+        envelope = output_mod.success_envelope(
+            result.text, None, result.duration_ms, None, None
+        )
+        envelope["mode"] = "interactive"
+        _write_stdout(json.dumps(envelope, ensure_ascii=False))
+    else:
+        _write_stdout(result.text)
     return 0
 
 
