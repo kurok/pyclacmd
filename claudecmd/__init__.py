@@ -1,13 +1,14 @@
-"""claudecmd — a programmatic, scriptable wrapper around the Claude Code CLI.
+"""claudecmd — a programmatic, scriptable driver for Claude Code's interactive session.
 
-This package exposes a small CLI (``claudecmd``) that calls the local
-``claude`` binary in print/headless mode and returns a stable output
-contract (plain text, JSON envelope, raw passthrough, or streamed text).
+This package exposes a small CLI (``claudecmd``) that drives the local
+``claude`` binary's *interactive* session under a pseudo-terminal and returns
+the parsed assistant reply (optionally as a JSON envelope). Driving the
+interactive session keeps automated calls on the interactive (subscription)
+path rather than separately-priced ``-p``/headless usage.
 
-It is intentionally a thin, well-behaved automation facade — not a
-replacement for interactive Claude Code usage.
+It is intentionally a thin, well-behaved automation facade.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

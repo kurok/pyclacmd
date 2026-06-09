@@ -1,29 +1,24 @@
-"""``claudecmd`` command-line entry point.
+"""``claudecmd`` — programmatic, scriptable driver for Claude Code's interactive session.
 
-Orchestrates: argument parsing -> prompt collection -> session resolution ->
-command construction -> execution -> output formatting, with a structured
-error taxonomy and stable exit codes.
+Spawns the interactive Claude Code TUI (not ``-p``), drives it under a PTY, and
+emits the parsed assistant reply (optionally as a JSON envelope). Driving the
+interactive session keeps automated calls on the interactive (subscription)
+path rather than separately-priced ``-p``/headless usage.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import sys
 from typing import List, Optional
 
 from . import __version__
-from .claude_command import (
-    ClaudeOptions,
-    OUTPUT_JSON,
-    OUTPUT_STREAM_JSON,
-    build_command,
-)
 from .errors import (
     ClacmdError,
     CLAUDE_AUTH_REQUIRED,
-    CLAUDE_EXIT_NONZERO,
     CWD_NOT_FOUND,
     NO_PROMPT,
     UNKNOWN,
@@ -31,20 +26,15 @@ from .errors import (
 from .prompt import DEFAULT_MAX_STDIN_BYTES, cleanup_temp_files, collect_prompt, read_stdin
 from .redact import redact, redact_argv
 from . import output as output_mod
-from . import pty_runner
 from . import interactive_runner as ir
-from . import runner as runner_mod
 from .session_store import SessionStore
 
-import os
-
-# stderr substrings that indicate Claude needs authentication.
+# Substrings in the rendered TUI that indicate Claude needs authentication.
 _AUTH_MARKERS = (
     "invalid api key",
     "authentication_error",
-    "please run `claude",
-    "please run claude",
     "run `claude /login`",
+    "please run claude",
     "not authenticated",
     "not logged in",
     "you must log in",
@@ -57,54 +47,27 @@ _AUTH_MARKERS = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="claudecmd",
-        description="Programmatic, scriptable wrapper around Claude Code.",
+        description="Programmatic driver for Claude Code's interactive session.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("prompt", nargs="?", help="Prompt text (or pipe via stdin)")
     parser.add_argument("--json", action="store_true", help="Emit a stable JSON envelope")
-    parser.add_argument("--stream", action="store_true", help="Stream assistant text progressively")
-    parser.add_argument("--raw", action="store_true", help="Emit Claude's raw output unchanged")
+    parser.add_argument("--raw", action="store_true", help="Print the full rendered TUI screen (debug)")
     parser.add_argument("--cwd", metavar="PATH", help="Working directory for Claude")
-    parser.add_argument("--session", metavar="ID-OR-NAME", help="Resume/track a session by UUID or local name")
+    parser.add_argument("--session", metavar="ID-OR-NAME", help="Resume a session by UUID or local name")
     parser.add_argument("--timeout", type=float, metavar="SECONDS", help="Abort after SECONDS")
     parser.add_argument("--model", help="Model alias or full name")
-    parser.add_argument("--max-turns", type=int, dest="max_turns", help="Max agent turns (forwarded to Claude)")
-    parser.add_argument("--max-budget-usd", type=float, dest="max_budget_usd", help="Max USD to spend")
+    parser.add_argument("--tools", dest="tools", metavar="TOOLS", help='Built-in tools to allow (e.g. "Bash,Read"); "" disables all')
+    parser.add_argument("--permission-mode", dest="permission_mode", help="Claude permission mode")
     parser.add_argument("--system-prompt", dest="system_prompt", help="Replace the system prompt")
     parser.add_argument("--append-system-prompt", dest="append_system_prompt", help="Append to the system prompt")
-    parser.add_argument("--allowed-tools", dest="allowed_tools", help='e.g. "Bash(git:*),Read"')
-    parser.add_argument("--disallowed-tools", dest="disallowed_tools", help="Tools to deny")
-    parser.add_argument("--permission-mode", dest="permission_mode", help="Claude permission mode")
-    parser.add_argument(
-        "--no-session-persistence",
-        action="store_true",
-        dest="no_session_persistence",
-        help="Do not persist/resume the session",
-    )
-    parser.add_argument("--pty", action="store_true", help="Force execution inside a PTY")
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Drive the interactive Claude session (not -p) so usage stays on your subscription",
-    )
-    parser.add_argument(
-        "--tools",
-        dest="tools",
-        metavar="TOOLS",
-        help='Interactive only: built-in tools to allow (e.g. "Bash,Read"); "" disables all',
-    )
+    parser.add_argument("--allowed-tools", dest="allowed_tools", help='Permission allow patterns, e.g. "Bash(git:*),Read"')
+    parser.add_argument("--disallowed-tools", dest="disallowed_tools", help="Permission deny patterns")
+    parser.add_argument("--add-dir", dest="add_dirs", action="append", metavar="PATH", help="Extra allowed directory (repeatable)")
     parser.add_argument("--debug", action="store_true", help="Emit diagnostics to stderr (redacted)")
     parser.add_argument("--dry-run", action="store_true", dest="dry_run", help="Print the command plan, do not run Claude")
-    parser.add_argument(
-        "--max-stdin-bytes",
-        type=int,
-        default=DEFAULT_MAX_STDIN_BYTES,
-        dest="max_stdin_bytes",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--version", action="version", version="claudecmd {}".format(__version__)
-    )
+    parser.add_argument("--max-stdin-bytes", type=int, default=DEFAULT_MAX_STDIN_BYTES, dest="max_stdin_bytes", help=argparse.SUPPRESS)
+    parser.add_argument("--version", action="version", version="claudecmd {}".format(__version__))
     return parser
 
 
@@ -125,8 +88,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         stdin_text = read_stdin()
         if not (args.prompt and args.prompt.strip()) and not stdin_text:
-            # Route through the structured error path so --json still gets an
-            # envelope and the documented `no_prompt`/exit-64 contract holds.
             if not args.json:
                 parser.print_usage(sys.stderr)
             raise ClacmdError(
@@ -135,10 +96,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
 
         prompt, temp_files = collect_prompt(
-            args.prompt,
-            stdin_text,
-            max_stdin_bytes=args.max_stdin_bytes,
-            debug=args.debug,
+            args.prompt, stdin_text, max_stdin_bytes=args.max_stdin_bytes, debug=args.debug
         )
 
         store = SessionStore()
@@ -146,41 +104,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.session:
             dbg("session {!r} resolved to {}".format(args.session, resume_id or "(new)"))
 
-        options = ClaudeOptions(
-            model=args.model,
-            max_turns=args.max_turns,
-            max_budget_usd=args.max_budget_usd,
-            system_prompt=args.system_prompt,
-            append_system_prompt=args.append_system_prompt,
-            allowed_tools=args.allowed_tools,
-            disallowed_tools=args.disallowed_tools,
-            permission_mode=args.permission_mode,
-            no_session_persistence=args.no_session_persistence,
-            resume_session_id=resume_id,
-            cwd=args.cwd,
-        )
-
-        if args.interactive:
-            return _run_interactive(prompt, args, store, resume_id, dbg)
-
-        output_format = OUTPUT_STREAM_JSON if args.stream else OUTPUT_JSON
-        command = build_command(prompt, options, output_format=output_format)
-        dbg("command: " + " ".join(shlex.quote(a) for a in redact_argv(command)))
-
-        if args.dry_run:
-            return _print_dry_run(command, args)
-
-        if args.pty:
-            return _run_pty(command, args, store, prompt)
-        if args.stream:
-            return _run_stream(command, args, store)
-        return _run_normal(command, args, store, dbg)
+        return _run(prompt, args, resume_id, dbg)
 
     except ClacmdError as exc:
         dbg("error: {} [{}]".format(exc.message, exc.kind))
         return _fail(exc, args, exc.extra.get("duration_ms"))
     except BrokenPipeError:
-        # Downstream consumer closed the pipe (e.g. `claudecmd ... | head`).
         try:
             sys.stdout.close()
         except Exception:
@@ -195,84 +124,50 @@ def main(argv: Optional[List[str]] = None) -> int:
             dbg("kept temp file(s): {}".format(", ".join(temp_files)))
 
 
-# --- execution paths --------------------------------------------------------
-def _run_normal(command, args, store, dbg) -> int:
-    try:
-        result = runner_mod.run(command, cwd=args.cwd, timeout=args.timeout)
-    except ClacmdError as exc:
-        if not args.pty and pty_runner.looks_like_tty_error(exc.message):
-            dbg("retrying under PTY after TTY-related failure")
-            return _run_pty(command, args, store, None)
-        raise
-
-    if result.returncode != 0:
-        if not args.pty and pty_runner.looks_like_tty_error(result.stderr):
-            dbg("retrying under PTY after TTY-related stderr")
-            return _run_pty(command, args, store, None)
-        raise _classify_exit(result)
-
-    data = output_mod.parse_claude_json(result.stdout)
-    session_id = output_mod.extract_session_id(data)
-    cost = output_mod.extract_cost(data)
-    text = output_mod.extract_result_text(data)
-
-    _maybe_update_session(store, args, session_id)
-
-    if args.raw:
-        _write_stdout(result.stdout)
-    elif args.json:
-        envelope = output_mod.success_envelope(
-            text, session_id, result.duration_ms, cost, data
-        )
-        _write_stdout(json.dumps(envelope, ensure_ascii=False))
-    else:
-        _write_stdout(text)
-    return 0
-
-
-def _run_stream(command, args, store) -> int:
-    processor = output_mod.StreamProcessor(raw=args.raw)
-    result = runner_mod.run_stream(
-        command, cwd=args.cwd, timeout=args.timeout, on_line=processor.handle_line
-    )
-    if result.returncode != 0:
-        raise _classify_exit(result)
-    _maybe_update_session(store, args, processor.session_id)
-    return 0
-
-
-def _run_interactive(prompt, args, store, resume_id, dbg) -> int:
-    from .claude_command import default_claude_bin
-
-    claude_bin = default_claude_bin()
-    if args.stream:
-        dbg("--stream is ignored in --interactive mode (no streaming contract)")
-
+def _run(prompt, args, resume_id, dbg) -> int:
+    claude_bin = ir.default_claude_bin()
     argv = ir.build_interactive_argv(
         prompt,
         claude_bin=claude_bin,
         model=args.model,
         permission_mode=args.permission_mode,
+        system_prompt=args.system_prompt,
+        append_system_prompt=args.append_system_prompt,
+        allowed_tools=args.allowed_tools,
+        disallowed_tools=args.disallowed_tools,
         tools=args.tools,
+        add_dirs=args.add_dirs,
         resume_session_id=resume_id,
     )
     if args.dry_run:
         return _print_dry_run(argv, args)
 
-    dbg("interactive argv: " + " ".join(shlex.quote(a) for a in redact_argv(argv)))
+    dbg("argv: " + " ".join(shlex.quote(a) for a in redact_argv(argv)))
     result = ir.run_interactive(
         prompt,
         claude_bin=claude_bin,
         cwd=args.cwd,
         model=args.model,
         permission_mode=args.permission_mode,
+        system_prompt=args.system_prompt,
+        append_system_prompt=args.append_system_prompt,
+        allowed_tools=args.allowed_tools,
+        disallowed_tools=args.disallowed_tools,
         tools=args.tools,
+        add_dirs=args.add_dirs,
         resume_session_id=resume_id,
         timeout=args.timeout,
     )
-    dbg("interactive events: {} ({}ms)".format(result.events, result.duration_ms))
+    dbg("events: {} ({}ms)".format(result.events, result.duration_ms))
 
     if not result.text.strip() and not args.raw:
+        low = result.rendered.lower()
+        if any(m in low for m in _AUTH_MARKERS):
+            raise ClacmdError(
+                CLAUDE_AUTH_REQUIRED,
+                "Claude Code authentication required (run `claude /login`).",
+                extra={"duration_ms": result.duration_ms},
+            )
         raise ClacmdError(
             UNKNOWN,
             "Interactive run produced no extractable assistant text "
@@ -291,62 +186,6 @@ def _run_interactive(prompt, args, store, resume_id, dbg) -> int:
     else:
         _write_stdout(result.text)
     return 0
-
-
-def _run_pty(command, args, store, prompt) -> int:
-    text = pty_runner.run_pty(command, cwd=args.cwd, timeout=args.timeout)
-    # PTY output is plain text; no JSON envelope/session metadata available.
-    if args.json:
-        envelope = output_mod.success_envelope(text, None, None, None, None)
-        _write_stdout(json.dumps(envelope, ensure_ascii=False))
-    else:
-        _write_stdout(text)
-    return 0
-
-
-# --- helpers ----------------------------------------------------------------
-def _maybe_update_session(store: SessionStore, args, session_id: Optional[str]) -> None:
-    if not args.session or not session_id or args.no_session_persistence:
-        return
-    try:
-        store.update(args.session, session_id, cwd=args.cwd)
-    except ClacmdError as exc:
-        # Session bookkeeping must never fail an otherwise-successful run.
-        if args.debug:
-            sys.stderr.write("[claudecmd] session store update failed: {}\n".format(exc.message))
-
-
-def _classify_exit(result: "runner_mod.RunResult") -> ClacmdError:
-    stderr = (result.stderr or "").strip()
-    low = stderr.lower()
-    if any(marker in low for marker in _AUTH_MARKERS):
-        return ClacmdError(
-            CLAUDE_AUTH_REQUIRED,
-            "Claude Code authentication required (run `claude /login`).",
-            stderr=stderr[:4000] or None,
-            extra={"duration_ms": result.duration_ms},
-        )
-    return ClacmdError(
-        CLAUDE_EXIT_NONZERO,
-        "Claude command failed",
-        exit_code=_normalize_exit_code(result.returncode),
-        stderr=stderr[:4000] or None,
-        extra={"duration_ms": result.duration_ms},
-    )
-
-
-def _normalize_exit_code(returncode: Optional[int]) -> int:
-    """Map a subprocess return code to a valid (0-255) process exit code.
-
-    Signal deaths arrive as negative codes (e.g. -9 for SIGKILL); convert them
-    to the conventional ``128 + signal`` form rather than letting a negative
-    value land in the JSON envelope and wrap mod 256 at the OS boundary.
-    """
-    if returncode is None:
-        return 1
-    if returncode < 0:
-        return 128 + (-returncode)
-    return returncode or 1
 
 
 def _print_dry_run(command: List[str], args) -> int:

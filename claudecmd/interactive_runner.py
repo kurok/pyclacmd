@@ -1,24 +1,25 @@
 """Drive Claude Code's *interactive* session programmatically.
 
-Unlike the ``-p``/print path (see :mod:`claudecmd.runner`), this spawns the
-full interactive TUI under a pseudo-terminal, renders it with a real terminal
-emulator (``pyte``) so layout/whitespace survive, answers the one-time
-workspace-trust dialog, waits for the turn to finish, and extracts the
+This spawns the full interactive TUI under a pseudo-terminal, renders it with a
+real terminal emulator (``pyte``) so layout/whitespace survive, answers the
+one-time workspace-trust dialog, waits for the turn to finish, and extracts the
 assistant's reply from the rendered screen.
 
 Why: Claude Code prices ``-p``/headless usage separately from interactive
-sessions. This path keeps automated calls on the interactive session.
+sessions. Driving the interactive session keeps automated calls on the
+interactive (subscription) path.
 
 This is best-effort screen-scraping of a human-facing TUI: it is inherently
-more fragile than ``-p`` and exposes no session id / cost metadata. Extraction
-is heuristic and tuned to Claude Code's current rendering (v2.1.x).
+fragile and exposes no session id / cost metadata. Extraction is heuristic and
+tuned to Claude Code's current rendering (v2.1.x).
 
-Both ``pexpect`` and ``pyte`` are imported lazily, so the core CLI keeps zero
-hard dependency on them.
+``pexpect`` and ``pyte`` are required dependencies; they are imported lazily so
+import errors surface as a clean :class:`ClacmdError`.
 """
 
 from __future__ import annotations
 
+import os
 import textwrap
 import time
 from dataclasses import dataclass, field
@@ -29,14 +30,13 @@ from .errors import (
     CLAUDE_NOT_FOUND,
     CLAUDE_TIMEOUT,
     PTY_UNAVAILABLE,
-    UNKNOWN,
 )
 
 # --- TUI glyph markers (Claude Code v2.1.x) ---------------------------------
 USER_MARK = "❯"        # ❯  user prompt / idle input box
 ASSISTANT_MARK = "⏺"   # ⏺  assistant message bullet
 # Status / spinner glyphs that lead transient "working"/"done" lines.
-STATUS_MARKS = ("✻", "✶", "✽", "✷", "✸", "✳")  # ✻ ✶ ✽ ✷ ✸ ✳
+STATUS_MARKS = ("✻", "✶", "✽", "✷", "✸", "✳")
 # Substring shown while a turn is still generating.
 WORKING_MARKER = "esc to interrupt"
 TRUST_MARKER = "trust this folder"
@@ -45,6 +45,11 @@ TRUST_MARKER = "trust this folder"
 DEFAULT_QUIET_PERIOD = 2.5     # seconds of no output that signal turn-complete
 DEFAULT_HARD_CAP = 180.0       # absolute ceiling if no explicit timeout
 PTY_ROWS, PTY_COLS = 600, 160  # tall virtual screen so long replies don't scroll off
+
+
+def default_claude_bin() -> str:
+    """The ``claude`` executable to invoke (override via env for tests)."""
+    return os.environ.get("CLAUDECMD_CLAUDE_BIN") or "claude"
 
 
 @dataclass
@@ -62,7 +67,7 @@ def _imports(pexpect_module: Any, pyte_module: Any):
         raise ClacmdError(
             PTY_UNAVAILABLE,
             "Interactive mode requires the 'pexpect' package "
-            "(install with: pip install 'pyclacmd[interactive]').",
+            "(install with: pip install pyclacmd).",
         )
     try:
         pyte = pyte_module or __import__("pyte")
@@ -70,7 +75,7 @@ def _imports(pexpect_module: Any, pyte_module: Any):
         raise ClacmdError(
             PTY_UNAVAILABLE,
             "Interactive mode requires the 'pyte' package "
-            "(install with: pip install 'pyclacmd[interactive]').",
+            "(install with: pip install pyclacmd).",
         )
     return pexpect, pyte
 
@@ -138,6 +143,10 @@ def build_interactive_argv(
     claude_bin: str,
     model: Optional[str] = None,
     permission_mode: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    append_system_prompt: Optional[str] = None,
+    allowed_tools: Optional[str] = None,
+    disallowed_tools: Optional[str] = None,
     tools: Optional[str] = None,
     add_dirs: Optional[List[str]] = None,
     resume_session_id: Optional[str] = None,
@@ -147,8 +156,9 @@ def build_interactive_argv(
 
     The positional prompt is placed FIRST, immediately after the binary.
     Several claude options are variadic (``--tools <tools...>``,
-    ``--add-dir <dirs...>``); if the prompt followed them it would be swallowed
-    as one of their values. Prompt-first makes that impossible.
+    ``--allowedTools <tools...>``, ``--add-dir <dirs...>``); if the prompt
+    followed them it would be swallowed as one of their values. Prompt-first
+    makes that impossible, and the variadic flags are kept last.
     """
     argv: List[str] = [claude_bin, prompt]  # positional prompt: auto-submitted
     if resume_session_id:
@@ -157,10 +167,19 @@ def build_interactive_argv(
         argv += ["--model", model]
     if permission_mode:
         argv += ["--permission-mode", permission_mode]
+    if system_prompt is not None:
+        argv += ["--system-prompt", system_prompt]
+    if append_system_prompt is not None:
+        argv += ["--append-system-prompt", append_system_prompt]
     for d in add_dirs or []:
         argv += ["--add-dir", d]
     argv += list(extra_args or [])
-    if tools is not None:  # variadic — keep last so it can't eat following args
+    # Variadic options last so they can't eat following args:
+    if allowed_tools:
+        argv += ["--allowedTools", allowed_tools]
+    if disallowed_tools:
+        argv += ["--disallowedTools", disallowed_tools]
+    if tools is not None:
         argv += ["--tools", tools]
     return argv
 
@@ -172,6 +191,10 @@ def run_interactive(
     cwd: Optional[str] = None,
     model: Optional[str] = None,
     permission_mode: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    append_system_prompt: Optional[str] = None,
+    allowed_tools: Optional[str] = None,
+    disallowed_tools: Optional[str] = None,
     tools: Optional[str] = None,
     add_dirs: Optional[List[str]] = None,
     resume_session_id: Optional[str] = None,
@@ -189,6 +212,10 @@ def run_interactive(
         claude_bin=claude_bin,
         model=model,
         permission_mode=permission_mode,
+        system_prompt=system_prompt,
+        append_system_prompt=append_system_prompt,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
         tools=tools,
         add_dirs=add_dirs,
         resume_session_id=resume_session_id,
