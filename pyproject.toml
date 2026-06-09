@@ -1,0 +1,12 @@
+# Project metadata lives in setup.cfg for broad toolchain compatibility
+# (works with the older pip/setuptools commonly preinstalled on macOS, and
+# with modern toolchains alike). This file pins the build backend and holds
+# tool configuration.
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

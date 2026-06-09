@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Executable shim for running claudecmd from a source checkout.
+
+Prefer installing the package (``pip install -e .``) which provides the
+``claudecmd`` console script.  This shim lets you run it directly without
+installing, e.g. ``./bin/claudecmd "say hello"``.
+"""
+import os
+import sys
+
+# Make the package importable when run from a checkout without installation.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from claudecmd.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
