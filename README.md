@@ -19,6 +19,10 @@ claudecmd --stream "explain the current architecture"
 claudecmd --session auth-refactor "continue from previous context"
 ```
 
+## Demo
+
+![claudecmd demo](assets/demo.gif)
+
 ---
 
 ## Requirements
@@ -323,8 +327,8 @@ pytest
 ```
 
 The test suite mocks the `claude` binary, so **CI never requires a real Claude
-login**. GitHub Actions runs `pytest` across Python 3.8–3.12 (see
-`.github/workflows/ci.yml`).
+login**. GitHub Actions runs `pytest` on Python 3.12 / Ubuntu (see
+`.github/workflows/ci.yml`); the package itself supports Python 3.8+.
 
 ### Manual macOS smoke tests
 
