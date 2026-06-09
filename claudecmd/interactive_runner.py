@@ -115,8 +115,17 @@ def extract_response(display_lines: List[str], prompt: str) -> str:
     if echo_idx is None:
         return ""
 
+    # The reply begins at the first ⏺ bullet after the prompt echo. Starting
+    # there skips any continuation lines of a multi-line prompt (e.g. the
+    # "--- STDIN ---" block) that the TUI echoes as part of the user turn.
+    resp_start = echo_idx + 1
+    for j in range(echo_idx + 1, len(lines)):
+        if lines[j].lstrip().startswith(ASSISTANT_MARK):
+            resp_start = j
+            break
+
     body: List[str] = []
-    for l in lines[echo_idx + 1:]:
+    for l in lines[resp_start:]:
         st = l.strip()
         if _is_rule(st):
             break  # reached the bottom input box

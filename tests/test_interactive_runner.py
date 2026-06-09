@@ -65,6 +65,27 @@ def test_extract_picks_last_turn():
     assert extract_response(screen, "second question") == "second answer"
 
 
+def test_extract_skips_multiline_prompt_echo():
+    # A positional+STDIN prompt is echoed multi-line by the TUI; only the
+    # assistant reply (the ⏺ block) should survive, not the echoed prompt.
+    screen = [
+        "❯ Translate to French. Output only the sentence.",
+        "--- STDIN ---",
+        "the cat sat on the mat",
+        "",
+        "⏺ Le chat était assis sur le tapis",
+        RULE,
+        "❯",
+        RULE,
+        "  chat:3k / 200k",
+    ]
+    prompt = (
+        "Translate to French. Output only the sentence.\n\n"
+        "--- STDIN ---\nthe cat sat on the mat"
+    )
+    assert extract_response(screen, prompt) == "Le chat était assis sur le tapis"
+
+
 def test_is_rule_and_status():
     assert _is_rule(RULE)
     assert _is_rule("━" * 12)
